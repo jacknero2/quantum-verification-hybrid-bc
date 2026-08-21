@@ -1,0 +1,1 @@
+python3 -m examples.examples -ex cz -n 2 -samples 20000 -k 2 --barrier-degree 2 -type infinite

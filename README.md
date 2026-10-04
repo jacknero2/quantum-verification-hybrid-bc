@@ -1,5 +1,14 @@
 # Verification of Quantum Circuits through Barrier Certificates using a Scenario Approach
 
+> **Credit:** This repository is a modified version of
+> [QuantumVerification/Quantum-Verification-QSW-2025](https://github.com/QuantumVerification/Quantum-Verification-QSW-2025),
+> the original implementation by Siwei Hu, Victor Lopata, Sadegh Soudjani and Paolo Zuliani
+> accompanying their paper *Verification of Quantum Circuits Through Barrier Certificates Using a
+> Scenario Approach* (IEEE QSW 2025, pp. 151–161,
+> [doi:10.1109/QSW67625.2025.00027](https://doi.org/10.1109/QSW67625.2025.00027)).
+> All credit for the original scenario-based method and code belongs to those authors.
+> This fork extends it to hybrid (branched) quantum-classical algorithms.
+
 ## Overview
 This repository contains the implementation of a scenario-based methodology for the formal verification of quantum circuits using barrier certificates. The approach enables proving the correctness of quantum circuits by ensuring they never reach undesired states, even under uncertainties and over different time horizons.
 

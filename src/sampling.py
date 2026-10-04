@@ -63,6 +63,17 @@ def sample_states(constraints, z, n_samples=100):
         sampler_vars = qmc.Sobol(d=l - 1 if l > 1 else 1, scramble=False)
         vars_samples = sampler_vars.random(n=n_samples)
 
+        # The variables left over after this constraint's own variables are
+        # assigned are the same for every sample, so the (deterministic,
+        # unscrambled) Sobol sequence used to split the residual mass among
+        # them only needs to be generated once per constraint. Generating it
+        # inside the per-sample loop, as before, made sampling quadratic in
+        # n_samples while producing identical values.
+        l_remain_all = len([v for v in z if v not in set(variables)])
+        if l_remain_all > 0:
+            sampler_remain = qmc.Sobol(d=l_remain_all - 1 if l_remain_all > 1 else 1, scramble=False)
+            remain_samples = sampler_remain.random_base2(m=int(np.ceil(np.log2(n_samples))))
+
         for idx in range(n_samples):
             S_constr = S_constr_samples[idx]
             sample = {v: 0 for v in z}
@@ -97,9 +108,6 @@ def sample_states(constraints, z, n_samples=100):
             remaining_vars = [v for v in z if v not in assigned_vars]
             l_remain = len(remaining_vars)
             if l_remain > 0:
-                # Prepare a sampler for remaining variables
-                sampler_remain = qmc.Sobol(d=l_remain - 1 if l_remain > 1 else 1, scramble=False)
-                remain_samples = sampler_remain.random_base2(m=int(np.ceil(np.log2(n_samples))))
                 remain_idx = idx % len(remain_samples)
                 random_points = remain_samples[remain_idx, :].tolist() if l_remain > 1 else []
                 # Sort and scale the random points

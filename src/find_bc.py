@@ -47,6 +47,23 @@ def find_bc(circuit: Circuit,
         dynamic_samples = generate_fx_samples(d_samples, Z, circuit)
         sampling_logger.info("Samples made.")
 
+    # Counterexample-guided sample augmentation (FINITE_HORIZON only). When
+    # True, every Z3 counterexample found is converted into a new training
+    # sample and permanently added to the relevant region's sample set for
+    # every later iteration, so the LP is never allowed to repeat the same
+    # mistake. Opt-in: default behavior is unchanged unless requested.
+    cegis = bool(kwargs.get("cegis", False))
+    cex_i_samples, cex_u_samples, cex_d_samples = [], [], []
+
+    # L1 penalty weight on the barrier's coefficients (FINITE_HORIZON
+    # only). 0.0 (default) reproduces existing behavior exactly -- no
+    # penalty added, LP shape unchanged. Pairs naturally with cegis: CEGIS
+    # forces the LP to keep satisfying a growing set of accumulated
+    # counterexamples, and L1 keeps it from doing that by piling on
+    # unnecessary extra terms (which is what makes candidates expensive
+    # for Z3 to check).
+    l1_weight = float(kwargs.get("l1_weight", 0.0))
+
     # Generate variables
     var = generate_variables(Z)
     # Generating terms
@@ -80,13 +97,28 @@ def find_bc(circuit: Circuit,
             y_upper_bound = np.random.uniform(1, 10)
             bounds[-1] = (-y_upper_bound, y_upper_bound)
 
-            i_values, u_values, dynamic_values, d_values = generate_values(init_terms, i_samples, u_samples, d_samples, dynamic_samples)
+            # Merge in any counterexamples harvested from earlier iterations
+            # so the LP is forced to keep satisfying every point that has
+            # ever broken a previous candidate, not just fresh random draws.
+            if cegis and (cex_i_samples or cex_u_samples or cex_d_samples):
+                use_i_samples = i_samples + cex_i_samples
+                use_u_samples = u_samples + cex_u_samples
+                use_d_samples = d_samples + cex_d_samples
+                use_dynamic_samples = generate_fx_samples(use_d_samples, Z, circuit)
+            else:
+                use_i_samples, use_u_samples, use_d_samples, use_dynamic_samples = \
+                    i_samples, u_samples, d_samples, dynamic_samples
 
-            
+            i_values, u_values, dynamic_values, d_values = generate_values(init_terms, use_i_samples, use_u_samples, use_d_samples, use_dynamic_samples)
+
+
             # Generate all LP problem constraints
             logger.info("Making constraints for the linear optimization problem...")
             Aub, bub = generate_all_constraints_fin(i_values, u_values, dynamic_values, d_values, steps, True)
             logger.info("Constraints made.")
+
+            if l1_weight > 0:
+                c, Aub, bub, bounds = add_l1_sparsity_penalty(c, Aub, bub, bounds, l, l1_weight)
 
             # LP problem
             logger.info("Solving LP problem...")
@@ -101,7 +133,20 @@ def find_bc(circuit: Circuit,
             logger.info("Time for the generation of the candidate: " + str(generation_time))
             start = time.perf_counter()
             # Chek barrier
-            q = check_barrier_fin(Z, barrier_certificate, circuit, var, Z0, Zu, optimals[0], optimals[2], optimals[1])
+            if cegis:
+                q, cex_stage, cex_sample = check_barrier_fin(Z, barrier_certificate, circuit, var, Z0, Zu, optimals[0], optimals[2], optimals[1], return_model=True)
+                if q and cex_sample is not None:
+                    if cex_stage == 'initial':
+                        cex_i_samples.append(cex_sample)
+                    elif cex_stage == 'unsafe':
+                        cex_u_samples.append(cex_sample)
+                    elif cex_stage == 'dynamic':
+                        cex_d_samples.append(cex_sample)
+                    logger.info(f"CEGIS: harvested a new '{cex_stage}' counterexample sample "
+                                f"({len(cex_i_samples)} initial, {len(cex_u_samples)} unsafe, "
+                                f"{len(cex_d_samples)} dynamic accumulated).")
+            else:
+                q = check_barrier_fin(Z, barrier_certificate, circuit, var, Z0, Zu, optimals[0], optimals[2], optimals[1])
             end = time.perf_counter()
             verification_time = end - start
 

@@ -88,19 +88,70 @@ def bitflip_code_example(p=0.1):
     return HybridSystem(Z=Z, branches=branches, log_file="bitflip_code_3qubit")
 
 
+def bitflip_code_example_n(n, p=0.1):
+    """
+    General n-qubit bit-flip code (n>=2): logical state alpha|0...0> +
+    beta|1...1> may suffer a single-qubit bit-flip error on any one of the
+    n physical qubits. The syndrome selects a Pauli-X correction on the
+    affected qubit.
+
+    This generalizes bitflip_code_example (which hand-picks n=3's index
+    pairs explicitly) to arbitrary n using the same invariant-pair
+    derivation, computed programmatically: basis index =
+    sum_i q_i * 2^(n-1-i) (q_0 highest-order tensor factor), codewords are
+    index 0 (|0...0>) and index N-1 (|1...1>) with N=2^n. A bit-flip on
+    qubit i toggles bit value 2^(n-1-i) of the index, so its correction
+    gate (X on qubit i, I elsewhere) is a permutation whose relevant
+    2-cycles pair the codeword pair with the corrupted pair
+    {bit_i, N-1-bit_i}; every other index forms the remaining, algebraically
+    invariant complement used as Zu, exactly as derived by hand for n=3.
+    """
+    Z = generate_symbols(n)
+    N = 2 ** n
+
+    def gate_for_qubit(i):
+        # i == -1 -> identity on every qubit (used for the no_error branch)
+        factors = [Xgate if j == i else Igate for j in range(n)]
+        gate = factors[0]
+        for factor in factors[1:]:
+            gate = np.kron(gate, factor)
+        return gate
+
+    def branch(x0_indices, gate, zu_indices):
+        return BranchNode(
+            circuit=[gate],
+            type_bc=FINITE_HORIZON,
+            Z0=[{'variables': [Z[i] for i in x0_indices], 'min': 1.0, 'max': 1.0, 'imConstr': {}}],
+            Zu=[{'variables': [Z[i] for i in zu_indices], 'min': p, 'max': 1.0, 'imConstr': {}}],
+            bc_kwargs={'steps': 1},
+        )
+
+    branches = {
+        "no_error": branch([0, N - 1], gate_for_qubit(-1), list(range(1, N - 1))),
+    }
+    for i in range(n):
+        bit_i = 2 ** (n - 1 - i)
+        x0 = [bit_i, N - 1 - bit_i]
+        zu = [j for j in range(N) if j not in (0, N - 1, bit_i, N - 1 - bit_i)]
+        branches[f"q{i}_flip"] = branch(x0, gate_for_qubit(i), zu)
+
+    return HybridSystem(Z=Z, branches=branches, log_file=f"bitflip_code_{n}qubit")
+
+
 EXAMPLES = {
     "measure_correct": measure_correct_example,
     "bitflip_code": bitflip_code_example,
 }
 
 
-def run_hybrid_example(example, n_samples, poly_degree=2, p=0.1):
+def run_hybrid_example(example, n_samples, poly_degree=2, p=0.1, cegis=False, l1_weight=0.0, max_workers=None):
     system = EXAMPLES[example](p)
     logger = set_logger(system.log_file + ".log")
     logger.info(str(datetime.datetime.now()))
     logger.info(f"Storing logs in {logger.handlers[-1].baseFilename}")
     logger.info(f"Running {system.log_file} hybrid example")
-    return find_hybrid_bc(system, n_samples=n_samples, deg=poly_degree)
+    return find_hybrid_bc(system, n_samples=n_samples, deg=poly_degree, max_workers=max_workers,
+                           cegis=cegis, l1_weight=l1_weight)
 
 
 if __name__ == '__main__':
@@ -115,9 +166,16 @@ if __name__ == '__main__':
     parser.add_argument("-samples", type=int, default=20000, help="Number of samples.")
     parser.add_argument("--barrier-degree", type=int, default=2, help="Maximum degree of generated barrier.")
     parser.add_argument("-p", type=float, default=0.1, help="Acceptable leakage probability.")
+    parser.add_argument("--cegis", action="store_true",
+                        help="Feed each Z3 counterexample back as a permanent training sample.")
+    parser.add_argument("--l1-weight", type=float, default=0.0,
+                        help="L1 sparsity penalty weight on the barrier's coefficients (0 = off).")
+    parser.add_argument("--max-workers", type=int, default=None,
+                        help="Max branches to certify in parallel (default: number of CPU cores).")
     args = parser.parse_args()
 
-    overall, results = run_hybrid_example(args.example, args.samples, args.barrier_degree, args.p)
+    overall, results = run_hybrid_example(args.example, args.samples, args.barrier_degree, args.p,
+                                           cegis=args.cegis, l1_weight=args.l1_weight, max_workers=args.max_workers)
     print("Overall certified:", overall)
     for branch_path, (certified, barrier, timings) in results.items():
         print(branch_path, "certified:", certified)

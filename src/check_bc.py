@@ -50,6 +50,37 @@ def _sympy_to_z3_rec(var_map, e):
     return rv
 
 
+def _z3_num_to_float(v):
+    'Convert a Z3 numeral (rational or algebraic) to a Python float.'
+    if is_algebraic_value(v):
+        v = v.approx(20)
+    if is_rational_value(v):
+        return float(v.numerator_as_long()) / float(v.denominator_as_long())
+    if is_int_value(v):
+        return float(v.as_long())
+    s = v.as_decimal(20)
+    if s.endswith('?'):
+        s = s[:-1]
+    return float(s)
+
+
+def z3_model_to_sample(Z, var_z3_dict, model):
+    '''
+    Convert a Z3 counterexample model into the same {symbol: complex value,
+    conjugate(symbol): conjugate value, ...} dict format produced by
+    sample_states(), so a counterexample can be fed back in as a new
+    training sample (counterexample-guided sample augmentation).
+    '''
+    sample = {}
+    for z in Z:
+        re_v = model.eval(var_z3_dict[sym.re(z)], model_completion=True)
+        im_v = model.eval(var_z3_dict[sym.im(z)], model_completion=True)
+        val = complex(_z3_num_to_float(re_v), _z3_num_to_float(im_v))
+        sample[z] = val
+        sample[conjugate(z)] = np.conj(val)
+    return sample
+
+
 def make_constraints(conditions, constraints, var_z3_dict):
     # Loop over each constraint in Z0_constraints
     for constr in constraints:
@@ -81,7 +112,8 @@ def check_barrier_fin(Z: list[sym.Symbol],
                   delta,
                   sigma,
                   tolerance=1e-5,
-                  timeout=300):
+                  timeout=300,
+                  return_model=False):
     Z_RI = [sym.re(z) for z in Z] + [sym.im(z) for z in Z]
     FZ = np.dot(unitary, Z)
 
@@ -123,8 +155,10 @@ def check_barrier_fin(Z: list[sym.Symbol],
             initial_conditions.append(var_z3_dict[sym.im(k)] >= v[0])
             initial_conditions.append(var_z3_dict[sym.im(k)] <= v[1])
 
-    i_sample = run_check(initial_conditions, 0)
+    i_sample, i_model = run_check(initial_conditions, 0, return_model=True)
     if i_sample:
+        if return_model:
+            return True, 'initial', z3_model_to_sample(Z, var_z3_dict, i_model)
         return True
 
 
@@ -147,22 +181,26 @@ def check_barrier_fin(Z: list[sym.Symbol],
             unsafe_conditions.append(var_z3_dict[sym.im(k)] >= v[0])
             unsafe_conditions.append(var_z3_dict[sym.im(k)] <= v[1])
 
-    u_sample = run_check(unsafe_conditions, 1)
+    u_sample, u_model = run_check(unsafe_conditions, 1, return_model=True)
     if u_sample:
+        if return_model:
+            return True, 'unsafe', z3_model_to_sample(Z, var_z3_dict, u_model)
         return True
 
     dynamic_constraint = [norm, z3_fx_barrier > sigma + tolerance]
 
 
     if (z3_fx_barrier > sigma + tolerance) == False:
-        return False
+        return (False, None, None) if return_model else False
 
-    delta_sample = run_check(dynamic_constraint, 2)
+    delta_sample, d_model = run_check(dynamic_constraint, 2, return_model=True)
 
     if delta_sample:
+        if return_model:
+            return True, 'dynamic', z3_model_to_sample(Z, var_z3_dict, d_model)
         return True
 
-    return False
+    return (False, None, None) if return_model else False
 
 '''-----------------------------'''
 
@@ -244,7 +282,7 @@ def check_barrier_inf(Z: list[sym.Symbol],
     return q
 
 
-def run_check(conditions, timeout):
+def run_check(conditions, timeout, return_model=False):
     s = z3.SolverFor('QF_NRA')
     set_option(precision=50)
     # set_option(timeout=10000)
@@ -252,7 +290,7 @@ def run_check(conditions, timeout):
     if s.check() == sat:
         m = s.model()
         logger.warning("Counterexample found: " + str(m))
-        return True
+        return (True, m) if return_model else True
     else:
         logger.info("No counterexamples found.")
-        return False
+        return (False, None) if return_model else False

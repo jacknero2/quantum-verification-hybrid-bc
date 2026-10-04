@@ -220,9 +220,13 @@ def solve_lp_fin(c, Aub, bub, bounds, l, terms, vars, opt_meth):
         x_optimal = result.x
         Re_a_optimal = x_optimal[0:2*l:2]
         Im_a_optimal = x_optimal[1:2 * l:2]
-        epsilon = x_optimal[-3]
-        sigma = x_optimal[-2]
-        y_optimal = x_optimal[-1]
+        # Positive indices (equivalent to the old -3/-2/-1 when x_optimal
+        # has no extra trailing columns) so eps/sigma/y are still found
+        # correctly if add_l1_sparsity_penalty appended auxiliary
+        # variables after them.
+        epsilon = x_optimal[2 * l]
+        sigma = x_optimal[2 * l + 1]
+        y_optimal = x_optimal[2 * l + 2]
         a_optimal = construct_complex_coefficients(Re_a_optimal, Im_a_optimal)
         barrier_certificate = generate_barrier_polynomial(a_optimal, terms, vars)
         return barrier_certificate, a_optimal, (epsilon, sigma, y_optimal)
@@ -230,6 +234,50 @@ def solve_lp_fin(c, Aub, bub, bounds, l, terms, vars, opt_meth):
     else:
         print("Optimization failed:", result.message)
         return None, None, None
+
+
+def add_l1_sparsity_penalty(c, Aub, bub, bounds, l, l1_weight):
+    """
+    Augment a finite-horizon LP with an L1 penalty on the barrier's
+    2*l real/imaginary coefficients, to bias the solver toward sparse
+    solutions instead of an arbitrary point tied on margin.
+
+    For each coefficient a_j, adds an auxiliary variable t_j with
+    t_j >= a_j and t_j >= -a_j (so t_j >= |a_j| at any feasible point),
+    and adds l1_weight * sum(t_j) to the objective. At the optimum the
+    solver is pushed to set each t_j down to exactly |a_j|, so this
+    reproduces minimizing lambda*||a||_1 - y while staying a linear
+    program.
+
+    This never shrinks the original feasible region: any point feasible
+    for the un-augmented problem remains feasible here by choosing
+    t_j = |a_j|, so a solution is lost only if a large enough l1_weight
+    makes the LP prefer a different (lower-margin) optimum -- not because
+    augmentation itself removes a solution.
+    """
+    num_samples = Aub.shape[0]
+    n0 = Aub.shape[1]
+    num_coeffs = 2 * l
+
+    Aub_padded = np.hstack([Aub, np.zeros((num_samples, num_coeffs))])
+
+    # t_j >= a_j   <=>  a_j - t_j <= 0
+    # t_j >= -a_j  <=>  -a_j - t_j <= 0
+    A_l1 = np.zeros((2 * num_coeffs, n0 + num_coeffs))
+    for j in range(num_coeffs):
+        A_l1[2 * j, j] = 1
+        A_l1[2 * j, n0 + j] = -1
+        A_l1[2 * j + 1, j] = -1
+        A_l1[2 * j + 1, n0 + j] = -1
+    b_l1 = np.zeros(2 * num_coeffs)
+
+    Aub_aug = np.vstack([Aub_padded, A_l1])
+    bub_aug = np.hstack([bub, b_l1])
+
+    c_aug = np.hstack([c, l1_weight * np.ones(num_coeffs)])
+    bounds_aug = list(bounds) + [(0, np.inf)] * num_coeffs
+
+    return c_aug, Aub_aug, bub_aug, bounds_aug
 
 '''-----------'''
 
